@@ -33,3 +33,8 @@ class PythonPack:
             "type_labels": type_labels,
             "intro": "",
         }
+
+    @staticmethod
+    def label_for_class_line(line: str) -> str | None:
+        """Re-expose the discriminator so non-cluster pages can use it."""
+        return label_for_class_line(line)

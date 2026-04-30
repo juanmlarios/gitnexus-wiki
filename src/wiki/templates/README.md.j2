@@ -1,0 +1,27 @@
+# Wiki
+
+> Generated {{ generated_at }} from the gitnexus knowledge graph for `{{ repo }}`.
+> {{ stats.files }} files · {{ stats.nodes }} symbols · {{ stats.edges }} relationships · {{ stats.communities }} communities · {{ process_count }} traced execution flows.
+
+## Pages
+
+- [Architecture](architecture.md) — repo overview from the graph
+- [Execution flows](processes.md) — every traced process
+
+### Functional clusters
+
+{% for c in cluster_pages %}
+- [{{ c.cluster_label }}](clusters/{{ c.slug }}.md) — {{ c.symbol_count }} symbols
+{% endfor %}
+
+## Repository shape
+
+| Top-level | Files | Symbols |
+|-----------|-------|---------|
+{% for d in top_level_dirs %}
+| `{{ d.path }}` | {{ d.file_count }} | {{ d.symbol_count }} |
+{% endfor %}
+
+---
+
+> Regenerate with `~/.claude/skills/gitnexus-wiki/bin/gitnexus-wiki`. Pages with verification failures land in `.failed/` — don't hand-edit, regenerate or fix the underlying graph.

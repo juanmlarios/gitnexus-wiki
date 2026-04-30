@@ -1,4 +1,14 @@
-"""Phase 1: enumerate the pages this run will produce."""
+"""Phase 1: enumerate the pages this run will produce.
+
+The page set is identical across repos and languages:
+    - README.md            (landing page, repo stats + page index)
+    - architecture.md      (auto-overview from the graph)
+    - processes.md         (every traced execution flow)
+    - clusters/<slug>.md   (one per Community, symbolCount > 1)
+
+No project-specific or framework-specific pages live here. Per-project
+overrides ship via <project>/.claude/wiki-templates/.
+"""
 
 from __future__ import annotations
 
@@ -8,10 +18,11 @@ from . import gitnexus
 
 
 @dataclass
-class ClusterPage:
-    cluster_label: str
+class Page:
     slug: str
-    symbol_count: int
+    kind: str  # "readme" | "architecture" | "processes" | "cluster"
+    cluster_label: str | None = None
+    symbol_count: int = 0
 
 
 _CLUSTER_QUERY = """
@@ -22,9 +33,20 @@ ORDER BY n DESC
 """
 
 
-def build_cluster_pages(repo: str) -> list[ClusterPage]:
+def build_pages(repo: str) -> list[Page]:
+    pages: list[Page] = [
+        Page(slug="README", kind="readme"),
+        Page(slug="architecture", kind="architecture"),
+        Page(slug="processes", kind="processes"),
+    ]
+    for p in _build_cluster_pages(repo):
+        pages.append(p)
+    return pages
+
+
+def _build_cluster_pages(repo: str) -> list[Page]:
     rows = gitnexus.cypher(repo, _CLUSTER_QUERY)
-    pages: list[ClusterPage] = []
+    pages: list[Page] = []
     seen: set[str] = set()
     for r in rows:
         label = (r.get("label") or "").strip()
@@ -35,7 +57,14 @@ def build_cluster_pages(repo: str) -> list[ClusterPage]:
             n = int(r.get("n") or 0)
         except ValueError:
             n = 0
-        pages.append(ClusterPage(cluster_label=label, slug=_slugify(label), symbol_count=n))
+        pages.append(
+            Page(
+                slug=_slugify(label),
+                kind="cluster",
+                cluster_label=label,
+                symbol_count=n,
+            )
+        )
     return pages
 
 

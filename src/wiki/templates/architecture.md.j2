@@ -2,7 +2,9 @@
 
 > {{ stats.files }} files · {{ stats.nodes }} symbols · {{ stats.edges }} relationships · {{ stats.communities }} communities · {{ process_count }} traced execution flows.
 
+{% prose "architecture-intro" %}
 This page is auto-generated from the gitnexus knowledge graph. Every count, file path, and symbol below was queried from the index at generation time. The page describes the *shape* of the repository — what is there — not the *intent*.
+{% endprose %}
 
 ## Repository shape
 
@@ -16,7 +18,9 @@ Code is organized into {{ top_level_dirs | length }} top-level entries{% if top_
 
 ## Functional clusters
 
+{% prose "architecture-clusters" %}
 The graph identifies {{ communities | length }} multi-symbol clusters via Leiden community detection. Each cluster has its own page under [`clusters/`](clusters/).
+{% endprose %}
 
 | Cluster | Symbols | Cohesion | Largest file |
 |---------|---------|----------|--------------|
@@ -50,11 +54,17 @@ The {{ longest_processes | length }} longest traced execution flow(s):
 See [processes.md](processes.md) for the full catalog.
 {% endif %}
 
-{% if inter_cluster_edges %}
 ## Inter-cluster seams
 
-`CALLS` edges that cross cluster boundaries — where one functional area depends on another:
+{% prose "architecture-seams" %}
+{% if inter_cluster_edges %}
+`CALLS` edges that cross cluster boundaries — where one functional area depends on another.
+{% else %}
+The index records no `CALLS` edges that cross cluster boundaries.
+{% endif %}
+{% endprose %}
 
+{% if inter_cluster_edges %}
 | From | To | Calls |
 |------|----|-------|
 {% for e in inter_cluster_edges %}

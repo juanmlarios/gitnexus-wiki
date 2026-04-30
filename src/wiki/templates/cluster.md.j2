@@ -2,6 +2,10 @@
 
 > {{ stats.symbol_count }} symbols across {{ stats.file_count }} file(s){% if stats.process_count %}, {{ stats.process_count }} traced execution flow(s){% endif %}.
 
+{% prose "cluster-intro" %}
+The {{ cluster_label }} cluster groups {{ stats.symbol_count }} symbols across {{ stats.file_count }} file(s){% if stats.process_count %}, with {{ stats.process_count }} traced execution flow(s) starting here{% endif %}.
+{% endprose %}
+
 ## Files
 
 {% for f in files %}
@@ -39,6 +43,9 @@
 | {{ p.label }} | {{ p.chain | join(' → ') }} |
 {% endfor %}
 {% endif %}
+
+{% prose "cluster-role" %}
+{% endprose %}
 
 ---
 

@@ -3,6 +3,10 @@
 > Generated {{ generated_at }} from the gitnexus knowledge graph for `{{ repo }}`.
 > {{ stats.files }} files · {{ stats.nodes }} symbols · {{ stats.edges }} relationships · {{ stats.communities }} communities · {{ process_count }} traced execution flows.
 
+{% prose "repo-intro" %}
+This wiki is auto-generated from the gitnexus knowledge graph. Use the [Architecture](architecture.md) page for an overview of the code's shape and the per-cluster pages below for detail.
+{% endprose %}
+
 ## Pages
 
 - [Architecture](architecture.md) — repo overview from the graph
@@ -24,4 +28,4 @@
 
 ---
 
-> Regenerate with `~/.claude/skills/gitnexus-wiki/bin/gitnexus-wiki`. Pages with verification failures land in `.failed/` — don't hand-edit, regenerate or fix the underlying graph.
+> Regenerate with `~/.claude/skills/gitnexus-wiki/bin/gitnexus-wiki`. Add `--prose` to fill narrative slots via the local `claude` CLI. Pages with verification failures land in `.failed/`.

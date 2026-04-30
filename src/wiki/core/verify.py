@@ -31,6 +31,8 @@ _COMMON_WORDS = {
     "CALLS", "IMPORTS", "EXTENDS", "IMPLEMENTS", "CONTAINS", "DEFINES",
     "MEMBER_OF", "STEP_IN_PROCESS", "HAS_METHOD", "HAS_PROPERTY",
     "ACCESSES", "METHOD_OVERRIDES", "METHOD_IMPLEMENTS",
+    # Tool / CLI names that show up in template footers:
+    "claude", "gitnexus", "npx", "git", "python", "pip", "uv",
 }
 
 

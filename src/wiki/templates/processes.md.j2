@@ -1,6 +1,8 @@
 # Execution flows
 
-{{ processes | length }} process(es) traced by gitnexus across `{{ repo }}`. Each row is a chain of function calls reachable from a single entry point. Click into [clusters/](clusters/) for the surrounding code.
+{% prose "processes-intro" %}
+{{ processes | length }} process(es) traced by gitnexus across `{{ repo }}`. Each row is a chain of function calls reachable from a single entry point.
+{% endprose %}
 
 {% if by_cluster %}
 {% for cluster, procs in by_cluster.items() %}

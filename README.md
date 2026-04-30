@@ -40,20 +40,37 @@ pip install git+https://github.com/juanmlarios/gitnexus-wiki
 In any gitnexus-indexed project:
 
 ```bash
-# Full regen
+# Full regen — deterministic only, no LLM, no API key
 gitnexus-wiki
 
-# Just verify existing wiki against the current graph (CI gate)
+# Add narrative prose via the local `claude` CLI (uses your Claude Code auth)
+gitnexus-wiki --prose
+
+# Just verify existing wiki against the current graph (CI gate, no LLM)
 gitnexus-wiki --verify-only
 
 # Single page
 gitnexus-wiki --page storage
 
-# Skip optional prose blocks (deterministic-only output)
-gitnexus-wiki --no-prose
+# Force regen of all prose slots, ignoring cache
+gitnexus-wiki --prose --no-cache
+
+# Use a different model
+gitnexus-wiki --prose --model opus
 ```
 
 The tool detects the current project's `.gitnexus/` directory and the active repo name automatically.
+
+## Prose mode
+
+`--prose` fills `{% prose %}{% endprose %}` blocks in the templates with bounded LLM output. Each call uses the local `claude` CLI (`claude --print --system-prompt ... --tools ""`), so there's **no API key to manage** — it re-uses your Claude Code authentication.
+
+Hard guarantees:
+- The LLM only sees the per-page fact pack (a JSON document of files/symbols/processes derived from the gitnexus graph). It cannot reference anything outside the fact pack.
+- Output is verified the same as deterministic prose — every backticked path/symbol must round-trip through the gitnexus index, or the page is rejected.
+- If `claude` isn't on PATH, or any call fails or fails verification, the deterministic body inside the `{% prose %}` block is used instead. The wiki always regenerates successfully.
+
+Per-project cache at `.gitnexus-wiki-cache/prose/` keyed by the SHA256 of (slot_name, fact_pack, system_prompt). Cache hits skip the subprocess entirely. Add `.gitnexus-wiki-cache/` to your project's `.gitignore`.
 
 ## Per-project overrides
 

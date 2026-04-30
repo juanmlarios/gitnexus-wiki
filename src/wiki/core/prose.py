@@ -30,7 +30,7 @@ LOG = logging.getLogger(__name__)
 
 # Bump when the SYSTEM_PROMPT or any contract semantics change so old
 # cache entries are naturally invalidated.
-PROMPT_VERSION = "2"
+PROMPT_VERSION = "3"
 
 DEFAULT_MODEL = "sonnet"
 TIMEOUT_S = 60
@@ -40,6 +40,10 @@ SYSTEM_PROMPT = """\
 You write technical prose for an auto-generated wiki page describing a
 software repository. Your only input is a fact pack: a JSON document
 containing all and only the facts you may use.
+
+You will be asked to fill one or more named "slots" for the same page.
+Return your output as a JSON object whose keys are the exact slot names
+and whose values are the prose for each slot.
 
 ABSOLUTE RULES — violations break the build:
 1. Every file path, symbol name, count, or technical term you mention
@@ -55,16 +59,18 @@ ABSOLUTE RULES — violations break the build:
    `pick_lam` is a function, describe it as "function pick_lam" — do
    NOT speculate that it picks "a language model" or anything else not
    stated in the fact pack.
-5. If you would need a fact that isn't in the fact pack, write
-   [GAP: <brief description>] and stop.
+5. If you would need a fact that isn't in the fact pack, set that slot's
+   value to "[GAP: <brief description>]".
 6. Do not extrapolate. If the fact pack lists 3 classes, do not write
    "many" or "and others". If only one config file appears, do not
    imply siblings.
 7. No editorializing. No "elegantly", "powerful", "well-designed",
    "robust", "comprehensive". Stick to what the fact pack proves.
-8. Output plain prose — no headings, no bullets, no code fences,
-   unless the slot's task asks for them.
-9. Keep within the word budget specified in the user message.
+8. Each slot's output is plain prose — no headings, no bullets, no code
+   fences, unless that slot's task asks for them.
+9. Stay within each slot's word budget.
+10. Return ONLY a JSON object. No prose outside the JSON. No markdown
+    code fences around the JSON.
 """
 
 
@@ -193,6 +199,36 @@ def _call_claude(user_prompt: str, *, model: str = DEFAULT_MODEL) -> str:
     return res.stdout.strip()
 
 
+def _parse_json_response(raw: str) -> dict | None:
+    """Best-effort JSON parse: handles bare JSON, ```json fences, and noise
+    around a single top-level object."""
+    if not raw:
+        return None
+    s = raw.strip()
+    # Strip code fences (```json ... ``` or ``` ... ```).
+    if s.startswith("```"):
+        first_nl = s.find("\n")
+        last_fence = s.rfind("```")
+        if first_nl != -1 and last_fence > first_nl:
+            s = s[first_nl + 1 : last_fence].strip()
+    # Try direct parse.
+    try:
+        v = json.loads(s)
+        return v if isinstance(v, dict) else None
+    except json.JSONDecodeError:
+        pass
+    # Last resort: find the outermost { ... } block.
+    start = s.find("{")
+    end = s.rfind("}")
+    if start != -1 and end > start:
+        try:
+            v = json.loads(s[start : end + 1])
+            return v if isinstance(v, dict) else None
+        except json.JSONDecodeError:
+            return None
+    return None
+
+
 # ---- cache ------------------------------------------------------------------
 
 
@@ -210,6 +246,21 @@ def _cache_key(slot_name: str, fact_pack_json: str, model: str) -> str:
     h.update(b"\0")
     h.update(slot_name.encode())
     h.update(b"\0")
+    h.update(fact_pack_json.encode())
+    return h.hexdigest()
+
+
+def _batch_cache_key(slot_names: list[str], fact_pack_json: str, model: str) -> str:
+    h = hashlib.sha256()
+    h.update(PROMPT_VERSION.encode())
+    h.update(b"\0batch\0")
+    h.update(model.encode())
+    h.update(b"\0")
+    h.update(SYSTEM_PROMPT.encode())
+    h.update(b"\0")
+    for name in sorted(slot_names):
+        h.update(name.encode())
+        h.update(b"\0")
     h.update(fact_pack_json.encode())
     return h.hexdigest()
 
@@ -285,3 +336,108 @@ def generate_prose(
     LOG.warning("prose slot %r exhausted retries (%s); using deterministic fallback",
                 slot.name, last_err)
     return ProseResult(text=fallback_text, cached=False, fallback=True, attempts=MAX_ATTEMPTS)
+
+
+# ---- batched (per-page) prose -----------------------------------------------
+
+
+@dataclass
+class BatchedProseResult:
+    """Per-slot result for a single per-page batched call."""
+    texts: dict[str, str]                 # slot_name -> generated prose
+    cached: bool
+    fallback_slots: list[str]             # slots that ended up using fallback
+    attempts: int
+
+
+def generate_batched_prose(
+    *,
+    slot_specs: list[ProseSlot],
+    fallbacks: dict[str, str],
+    fact_pack: dict[str, Any],
+    project_root: Path,
+    model: str = DEFAULT_MODEL,
+    use_cache: bool = True,
+) -> BatchedProseResult:
+    """One LLM call per page that fills every prose slot at once.
+
+    Returns a (slot_name -> text) map. Any slot the LLM didn't return a value
+    for, or whose value parses as a [GAP: ...] marker, is filled from the
+    `fallbacks` map.
+    """
+    if not slot_specs:
+        return BatchedProseResult(texts={}, cached=False, fallback_slots=[], attempts=0)
+
+    fact_pack_json = json.dumps(fact_pack, sort_keys=True, default=str)
+    slot_names = [s.name for s in slot_specs]
+    key = _batch_cache_key(slot_names, fact_pack_json, model)
+
+    if use_cache:
+        cached = _read_cache(project_root, key)
+        if cached is not None:
+            try:
+                texts = json.loads(cached)
+                # Pad missing keys (in case spec list grew) and report none as fallback
+                # — anything that's missing gets a fallback in the substitution step.
+                return BatchedProseResult(
+                    texts={k: v for k, v in texts.items() if isinstance(v, str)},
+                    cached=True, fallback_slots=[], attempts=0,
+                )
+            except json.JSONDecodeError:
+                LOG.warning("cached prose at %s was not valid JSON; regenerating", key)
+
+    # Build prompt: list each slot, its task, its budget.
+    slot_lines = []
+    for s in slot_specs:
+        slot_lines.append(f"- {s.name} (≤ {s.word_budget} words): {s.task}")
+    user_prompt = (
+        "Fill the following prose slots for one page. Return ONLY a JSON object "
+        "whose keys are exactly the slot names below — no surrounding prose, "
+        "no markdown code fences, just the JSON.\n\n"
+        "Slots:\n" + "\n".join(slot_lines) + "\n\n"
+        f"Fact pack (JSON — your only allowed source of facts):\n{fact_pack_json}\n"
+    )
+
+    last_err: Exception | None = None
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        try:
+            raw = _call_claude(user_prompt, model=model)
+        except ClaudeNotFoundError as e:
+            LOG.warning("%s — using deterministic fallback for entire page", e)
+            return BatchedProseResult(
+                texts={}, cached=False, fallback_slots=slot_names, attempts=attempt,
+            )
+        except (ProseError, subprocess.TimeoutExpired) as e:
+            last_err = e
+            LOG.warning("batched prose call failed (attempt %d/%d): %s",
+                        attempt, MAX_ATTEMPTS, e)
+            continue
+
+        payload = _parse_json_response(raw)
+        if payload is None:
+            last_err = ProseError("batched response was not a parseable JSON object")
+            LOG.warning("batched prose returned non-JSON (attempt %d/%d): %.200r",
+                        attempt, MAX_ATTEMPTS, raw)
+            continue
+
+        # Detect any GAP markers; treat as missing for that slot only.
+        cleaned: dict[str, str] = {}
+        fallback_slots: list[str] = []
+        for s in slot_specs:
+            value = payload.get(s.name)
+            if not isinstance(value, str) or "[GAP:" in value:
+                fallback_slots.append(s.name)
+                continue
+            cleaned[s.name] = value.strip()
+
+        if use_cache and cleaned:
+            _write_cache(project_root, key, json.dumps(cleaned, sort_keys=True))
+        return BatchedProseResult(
+            texts=cleaned, cached=False, fallback_slots=fallback_slots, attempts=attempt,
+        )
+
+    LOG.warning("batched prose exhausted retries (%s); using deterministic fallback for page",
+                last_err)
+    return BatchedProseResult(
+        texts={}, cached=False, fallback_slots=slot_names, attempts=MAX_ATTEMPTS,
+    )

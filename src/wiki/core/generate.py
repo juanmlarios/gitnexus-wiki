@@ -67,14 +67,17 @@ def generate(
 
     def build_one(page: manifest.Page) -> PageResult:
         meta = _ProseMeta()
-        handler = _make_prose_handler(
+        handler = _BatchedProseHandler(
             project_root=project_root,
             enabled=prose,
             model=model,
             use_cache=use_cache,
             meta=meta,
         )
-        md = _render_page(repo.name, page, repo_fp, pack, cluster_pages, generated_at, handler)
+        md = _render_page(
+            repo.name, page, repo_fp, pack, cluster_pages, generated_at, handler.jinja_handler
+        )
+        md = handler.fill(md)
         target = _target_path(out_dir, page)
         errors = verify.verify_markdown(
             repo.name, md, repo_stats=repo.stats, extra_known=extra_known
@@ -132,43 +135,79 @@ class _ProseMeta:
         }
 
 
-def _make_prose_handler(
-    *,
-    project_root: Path,
-    enabled: bool,
-    model: str,
-    use_cache: bool,
-    meta: _ProseMeta,
-) -> Callable | None:
-    if not enabled:
-        return None
+class _BatchedProseHandler:
+    """Two-pass prose handler.
 
-    def handler(*, slot_name: str, fallback: str, fact_pack: dict) -> str:
-        spec = _prose.SLOT_SPECS.get(slot_name)
-        if spec is None:
-            # Unknown slot — fail closed: keep the deterministic body.
-            meta.fallbacks += 1
-            meta.fallback_slots.append(f"{slot_name}(unknown)")
-            return fallback
+    Pass 1 (during Jinja render): record each {% prose %} block as a slot
+    and substitute a unique placeholder. The fact_pack is captured from the
+    first slot encountered (it's the same per page).
 
-        result = _prose.generate_prose(
-            slot=spec,
-            fact_pack=fact_pack,
-            fallback_text=fallback,
-            project_root=project_root,
-            model=model,
-            use_cache=use_cache,
+    Pass 2 (after render): make ONE LLM call for the whole page, parse the
+    JSON response, and substitute placeholders in the rendered markdown.
+    Slots that the LLM omitted, marked GAP, or failed to verify keep their
+    deterministic fallback.
+    """
+
+    def __init__(self, *, project_root: Path, enabled: bool, model: str,
+                 use_cache: bool, meta: "_ProseMeta"):
+        self.project_root = project_root
+        self.enabled = enabled
+        self.model = model
+        self.use_cache = use_cache
+        self.meta = meta
+        self._slots: list[tuple[str, str, str]] = []  # (slot_name, fallback, placeholder)
+        self._fact_pack: dict | None = None
+
+    @property
+    def jinja_handler(self) -> Callable | None:
+        if not self.enabled:
+            return None
+        return self._collect
+
+    def _collect(self, *, slot_name: str, fallback: str, fact_pack: dict) -> str:
+        if self._fact_pack is None:
+            self._fact_pack = fact_pack
+        idx = len(self._slots)
+        placeholder = f"PROSE:{slot_name}:{idx}"
+        self._slots.append((slot_name, fallback, placeholder))
+        return placeholder
+
+    def fill(self, rendered_md: str) -> str:
+        if not self.enabled or not self._slots:
+            return rendered_md
+
+        # Build the spec list for known slots; unknown slots keep their fallback.
+        known_specs: list[_prose.ProseSlot] = []
+        fallbacks: dict[str, str] = {}
+        for slot_name, fallback, _ in self._slots:
+            spec = _prose.SLOT_SPECS.get(slot_name)
+            if spec is None:
+                continue
+            if spec.name not in fallbacks:  # de-dupe; same slot may appear twice
+                known_specs.append(spec)
+                fallbacks[spec.name] = fallback
+
+        result = _prose.generate_batched_prose(
+            slot_specs=known_specs,
+            fallbacks=fallbacks,
+            fact_pack=self._fact_pack or {},
+            project_root=self.project_root,
+            model=self.model,
+            use_cache=self.use_cache,
         )
-        if result.fallback:
-            meta.fallbacks += 1
-            meta.fallback_slots.append(slot_name)
-        elif result.cached:
-            meta.cache_hits += 1
-        else:
-            meta.fresh += 1
-        return result.text
 
-    return handler
+        if result.cached:
+            self.meta.cache_hits += len(known_specs)
+        else:
+            self.meta.fresh += len(known_specs) - len(result.fallback_slots)
+            self.meta.fallbacks += len(result.fallback_slots)
+            self.meta.fallback_slots.extend(result.fallback_slots)
+
+        # Substitute placeholders.
+        for slot_name, fallback, placeholder in self._slots:
+            text = result.texts.get(slot_name, fallback)
+            rendered_md = rendered_md.replace(placeholder, text)
+        return rendered_md
 
 
 # ---- per-page dispatch ------------------------------------------------------
